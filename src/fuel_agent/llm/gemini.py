@@ -1,0 +1,206 @@
+"""Adaptador do Google Gemini, via SDK oficial `google-genai`.
+
+Usa chamada manual de funções (o agente executa as tools e audita cada uma) e saída
+estruturada com schema Pydantic. O conteúdo devolvido pelo modelo é reenviado sem
+alterações, preservando as assinaturas de raciocínio exigidas pela API.
+"""
+
+import json
+import time
+import uuid
+from collections.abc import Callable
+from typing import Any
+
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
+
+from fuel_agent.audit import AuditTrail
+from fuel_agent.llm.base import (
+    AssistantTurn,
+    LLMProvider,
+    LLMRefusalError,
+    ModelT,
+    ToolCall,
+    ToolDefinition,
+    ToolOutcome,
+    ToolSession,
+)
+
+BLOCKED_FINISH_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION"}
+# Sobrecarga ou cota esgotada: vale esperar, repetir e, persistindo, usar o modelo reserva.
+OVERLOAD_STATUS = {429, 503}
+RETRY_DELAYS_SECONDS = (10.0, 30.0)
+
+
+class GeminiProvider(LLMProvider):
+    provider_name = "google"
+
+    def __init__(
+        self,
+        model: str,
+        audit: AuditTrail,
+        *,
+        api_key: str | None,
+        max_tokens: int,
+        fallback_model: str | None = None,
+        client: Any | None = None,
+        retry_delays: tuple[float, ...] = RETRY_DELAYS_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
+        super().__init__(model, audit)
+        self._client = client or genai.Client(api_key=api_key)
+        self._max_tokens = max_tokens
+        self._fallback_model = fallback_model
+        self._active_model = model
+        self._retry_delays = retry_delays
+        self._sleep = sleep
+
+    def _call_with_retries(
+        self, contents: list, config: types.GenerateContentConfig, purpose: str
+    ) -> Any:
+        """Chama o modelo ativo, esperando e repetindo enquanto ele estiver sobrecarregado."""
+        for attempt, delay in enumerate([*self._retry_delays, None], start=1):
+            try:
+                return self._client.models.generate_content(
+                    model=self._active_model, contents=contents, config=config
+                )
+            except genai_errors.APIError as exc:
+                if exc.code not in OVERLOAD_STATUS or delay is None:
+                    raise
+                self._audit.record(
+                    "llm_retry",
+                    purpose,
+                    provider=self.provider_name,
+                    model=self._active_model,
+                    attempt=attempt,
+                    wait_seconds=delay,
+                    reason=f"HTTP {exc.code}",
+                )
+                self._sleep(delay)
+        raise AssertionError("inalcançável")
+
+    def _request(self, contents: list, config: types.GenerateContentConfig, purpose: str) -> Any:
+        """Tenta o modelo ativo (com novas tentativas); persistindo a sobrecarga, usa o reserva."""
+        try:
+            return self._call_with_retries(contents, config, purpose)
+        except genai_errors.APIError as exc:
+            can_fall_back = self._fallback_model not in (None, self._active_model)
+            if exc.code not in OVERLOAD_STATUS or not can_fall_back:
+                raise
+            self._audit.record(
+                "llm_fallback",
+                purpose,
+                provider=self.provider_name,
+                from_model=self._active_model,
+                to_model=self._fallback_model,
+                reason=f"HTTP {exc.code}",
+            )
+            self._active_model = self._fallback_model
+            return self._call_with_retries(contents, config, purpose)
+
+    def generate(self, purpose: str, system: str, contents: list, config: dict[str, Any]) -> Any:
+        response = self._request(
+            contents,
+            types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=self._max_tokens,
+                # O SDK não executa funções sozinho: o agente controla e audita cada chamada.
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                **config,
+            ),
+            purpose,
+        )
+        candidate = response.candidates[0] if response.candidates else None
+        finish = getattr(getattr(candidate, "finish_reason", None), "name", None)
+        usage = response.usage_metadata
+        self.record_call(
+            purpose,
+            system=system,
+            payload=[c.model_dump(mode="json", exclude_none=True) for c in contents],
+            served_model=getattr(response, "model_version", None),
+            stop_reason=finish,
+            input_tokens=getattr(usage, "prompt_token_count", None),
+            output_tokens=getattr(usage, "candidates_token_count", None),
+            request_id=getattr(response, "response_id", None),
+        )
+        if candidate is None or finish in BLOCKED_FINISH_REASONS:
+            raise LLMRefusalError(f"Resposta bloqueada pelo provedor (motivo: {finish})")
+        return response
+
+    def start_tool_session(
+        self, purpose: str, system: str, user_message: str, tools: list[ToolDefinition]
+    ) -> ToolSession:
+        return _GeminiToolSession(self, purpose, system, user_message, tools)
+
+    def structured(
+        self, purpose: str, system: str, user_message: str, output_format: type[ModelT]
+    ) -> ModelT:
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text=user_message)])]
+        response = self.generate(
+            purpose,
+            system,
+            contents,
+            {"response_mime_type": "application/json", "response_schema": output_format},
+        )
+        if isinstance(response.parsed, output_format):
+            return response.parsed
+        return output_format.model_validate_json(response.text)
+
+
+class _GeminiToolSession(ToolSession):
+    def __init__(
+        self,
+        provider: GeminiProvider,
+        purpose: str,
+        system: str,
+        user_message: str,
+        tools: list[ToolDefinition],
+    ):
+        self._provider = provider
+        self._purpose = purpose
+        self._system = system
+        self._contents = [
+            types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
+        ]
+        self._config = {
+            "tools": [
+                types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration(
+                            name=t.name,
+                            description=t.description,
+                            parameters_json_schema=t.input_schema,
+                        )
+                        for t in tools
+                    ]
+                )
+            ],
+        }
+
+    def next_turn(self) -> AssistantTurn:
+        response = self._provider.generate(
+            self._purpose, self._system, self._contents, self._config
+        )
+        self._contents.append(response.candidates[0].content)
+        calls = [
+            ToolCall(id=fc.id or uuid.uuid4().hex, name=fc.name, arguments=dict(fc.args or {}))
+            for fc in response.function_calls or []
+        ]
+        text = "".join(
+            p.text for p in response.candidates[0].content.parts or [] if p.text and not p.thought
+        )
+        return AssistantTurn(text=text, tool_calls=calls)
+
+    def add_tool_results(self, outcomes: list[ToolOutcome]) -> None:
+        parts = [
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=o.call.id,
+                    name=o.call.name,
+                    response={"error" if o.is_error else "output": json.loads(o.content)},
+                )
+            )
+            for o in outcomes
+        ]
+        self._contents.append(types.Content(role="user", parts=parts))

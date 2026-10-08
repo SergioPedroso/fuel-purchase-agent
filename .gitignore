@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Segredos
+.env
+
+# Dados baixados, logs de auditoria e relatórios gerados
+data/
+logs/
+outputs/
+
+# Rascunhos locais
+.scratch/
