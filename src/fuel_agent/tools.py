@@ -31,6 +31,7 @@ class RunContext:
     output_dir: Path
     today: date
     horizon_days: int
+    purchases_per_week: int
     market_history_days: int
     news_max_age_days: int
     news_per_query: int

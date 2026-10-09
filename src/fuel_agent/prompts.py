@@ -65,6 +65,9 @@ aparecem. Não calcule novos percentuais nem estime preços.
 
 WRITER_USER_TEMPLATE = """\
 Data de hoje: {today} | Horizonte: {horizon} dias | Produtos: {products}
+O posto compra em média {purchases_per_week} vezes por semana: ANTECIPAR significa adiantar \
+a próxima compra ou aumentar o volume desta; ADIAR significa comprar só o necessário até a \
+próxima compra.
 {focus_block}
 <sinais>
 {signals_json}

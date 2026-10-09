@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     max_agent_steps: int = 8
 
     # Horizonte da decisão de compra (dias) e janela de notícias consideradas.
+    # Com 2 compras por semana, 7 dias cobrem as duas próximas compras.
     horizon_days: int = 7
+    purchases_per_week: int = 2
     news_max_age_days: int = 10
     news_per_query: int = 8
 

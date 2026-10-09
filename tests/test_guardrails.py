@@ -12,6 +12,20 @@ from fuel_agent.guardrails import (
     validate_request,
 )
 from fuel_agent.products import ProductKey
+from fuel_agent.report import practical_action
+from fuel_agent.signals import Decision
+
+
+@pytest.mark.parametrize(
+    "decision, expected",
+    [
+        (Decision.ANTECIPAR, "aumente o volume"),
+        (Decision.ADIAR, "~4 dias"),  # 2 compras por semana
+        (Decision.MANTER, "2 compras por semana"),
+    ],
+)
+def test_practical_action_follows_purchase_rhythm(decision, expected):
+    assert expected in practical_action(decision, purchases_per_week=2)
 
 
 def test_all_products_by_default():

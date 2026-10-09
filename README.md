@@ -139,21 +139,30 @@ python -m fuel_agent --foco "O fim da desoneração afeta o etanol?"
 ```
 
 O relatório sai em `outputs/<run_id>/relatorio.html` (e `.md`, com dois gráficos). Rode antes
-de cada decisão de compra; uma execução leva cerca de 1 a 3 minutos (as notícias do dia são
-buscadas na hora).
+de cada compra (o posto compra em média **2 vezes por semana**); uma execução leva cerca de
+1 a 3 minutos (as notícias do dia são buscadas na hora).
+
+Cada decisão vem traduzida para o ritmo de compras:
+
+| Decisão | Na prática (2 compras por semana) |
+|---|---|
+| 🔺 ANTECIPAR | Antecipe a próxima compra ou aumente o volume desta para cobrir também a seguinte, se houver espaço no tanque. |
+| 🔻 ADIAR | Compre só o necessário até a próxima compra (~4 dias) e reavalie antes dela; evite estoque extra. |
+| ➖ MANTER ROTINA | Siga a rotina de 2 compras por semana e reavalie na próxima. |
 
 | Variável (`.env`) | Padrão | Descrição |
 |---|---|---|
 | `FUEL_LLM_PROVIDER` | `gemini` | `gemini` ou `claude` |
 | `FUEL_LLM_MODEL` | `gemini-3.8-flash` | modelo principal |
 | `FUEL_LLM_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | modelo reserva |
-| `FUEL_HORIZON_DAYS` | `7` | horizonte da decisão |
+| `FUEL_HORIZON_DAYS` | `7` | horizonte da decisão (cobre as duas próximas compras) |
+| `FUEL_PURCHASES_PER_WEEK` | `2` | ritmo de compras usado na orientação prática |
 | `FUEL_NEWS_MAX_AGE_DAYS` | `10` | idade máxima das notícias |
 
 ## Testes
 
 ```bash
-pytest            # 39 testes, sem rede e sem LLM real
+pytest            # 42 testes, sem rede e sem LLM real
 ruff check src tests && ruff format --check src tests
 ```
 
@@ -184,8 +193,11 @@ src/fuel_agent/
 
 ## Limitações e próximos passos
 
-- **Validar com o histórico do posto.** Com as cotações ou notas de compra da Raízen (data,
-  produto, preço), dá para medir quantas vezes o sinal acertou e calibrar os pesos.
+- **Validar o sinal.** Os pesos foram definidos por raciocínio, não ajustados a dados. O posto
+  não tem histórico de preços de compra; a partir de agora, anotar a data, o produto e o preço
+  de cada compra (2 por semana) permite medir em poucos meses quantas vezes o sinal acertou e
+  calibrar os pesos. Uma alternativa imediata é testar o componente de mercado contra a série
+  semanal de preços da ANP em MG, que acompanha o preço da distribuidora com atraso.
 - **Defasagem em relação à paridade de importação.** Informando o preço atual da Petrobras,
   o agente poderia estimar a defasagem, um dos melhores indicadores de reajuste.
 - **Etanol.** Integrar o indicador CEPEA/Paulínia (hoje acessado só via notícias).

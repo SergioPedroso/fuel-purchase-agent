@@ -345,6 +345,7 @@ class FuelPurchaseAgent:
         return WRITER_USER_TEMPLATE.format(
             today=self.ctx.today.strftime("%d/%m/%Y"),
             horizon=self.settings.horizon_days,
+            purchases_per_week=self.ctx.purchases_per_week,
             products=", ".join(PRODUCTS[p].name for p in self.ctx.request.products),
             focus_block=FOCUS_BLOCK.format(focus=focus) if focus else "",
             signals_json=json.dumps(signals_payload, ensure_ascii=False, indent=1),
@@ -419,6 +420,7 @@ def generate_recommendation(
         output_dir=settings.outputs_dir / audit.run_id,
         today=today,
         horizon_days=settings.horizon_days,
+        purchases_per_week=settings.purchases_per_week,
         market_history_days=settings.market_history_days,
         news_max_age_days=settings.news_max_age_days,
         news_per_query=settings.news_per_query,

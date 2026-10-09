@@ -55,16 +55,33 @@ HTML_TEMPLATE = """<!doctype html>
 """
 
 
-def _decision_table(signals: list[ProductSignal]) -> str:
+def practical_action(decision: Decision, purchases_per_week: int) -> str:
+    """Tradução da decisão para o ritmo de compras do posto."""
+    interval = round(7 / max(purchases_per_week, 1))
+    if decision == Decision.ANTECIPAR:
+        return (
+            "Antecipe a próxima compra ou aumente o volume desta para cobrir também a "
+            "seguinte, se houver espaço no tanque."
+        )
+    if decision == Decision.ADIAR:
+        return (
+            f"Compre só o necessário até a próxima compra (~{interval} dias) e reavalie antes "
+            "dela; evite estoque extra."
+        )
+    return f"Siga a rotina ({purchases_per_week} compras por semana) e reavalie na próxima."
+
+
+def _decision_table(signals: list[ProductSignal], purchases_per_week: int) -> str:
     rows = [
-        "| Produto | Decisão | Confiança | Pontuação (mercado / notícias) |",
-        "|---|---|---|---|",
+        "| Produto | Decisão | Confiança | Na prática | Pontuação (mercado / notícias) |",
+        "|---|---|---|---|---|",
     ]
     for s in signals:
+        score = f"{s.score:+.2f} ({s.market_score:+.2f} / {s.news_score:+.2f})".replace(".", ",")
         rows.append(
             f"| {PRODUCTS[s.product].name} | {DECISION_ICON[s.decision]} **{s.decision.value}** "
-            f"| {s.confidence.value} | {s.score:+.2f} ({s.market_score:+.2f} / "
-            f"{s.news_score:+.2f}) |".replace(".", ",")
+            f"| {s.confidence.value} | {practical_action(s.decision, purchases_per_week)} "
+            f"| {score} |"
         )
     return "\n".join(rows)
 
@@ -156,7 +173,7 @@ def build_markdown(
 
 ## Decisão por produto
 
-{_decision_table(signals)}
+{_decision_table(signals, ctx.purchases_per_week)}
 
 ![Tendência do preço por produto]({signal_chart.name})
 
